@@ -1,0 +1,27 @@
+kind = "web"
+previewPath = "/"
+title = "BIM Compliance Checker"
+version = "1.0.0"
+id = "artifacts/bim-checker"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 21954
+
+[services.development]
+run = "pnpm --filter @workspace/bim-checker run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/bim-checker", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/bim-checker/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "21954"
+BASE_PATH = "/"
