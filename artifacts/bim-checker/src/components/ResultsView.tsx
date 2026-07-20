@@ -1,12 +1,26 @@
+import React, { useState, useMemo } from 'react';
 import { BuildingModel, ComplianceReport } from '@/lib/types';
-import { CheckCircle2, XCircle, AlertTriangle, ShieldCheck } from 'lucide-react';
+import { CheckCircle2, XCircle, AlertTriangle, ShieldCheck, Map, Code2 } from 'lucide-react';
 import { FloorPlanVis } from './FloorPlanVis';
 import { RuleCard } from './RuleCard';
+import { JsonViewer } from './JsonViewer';
+import { buildAnnotationMap } from '@/lib/jsonAnnotate';
 import { motion } from 'framer-motion';
 
+type ViewTab = 'floorplan' | 'json';
+
 export function ResultsView({ model, report }: { model: BuildingModel, report: ComplianceReport }) {
+  const [activeTab, setActiveTab] = useState<ViewTab>('floorplan');
   const isPass = report.overallStatus === 'PASS';
   const isFail = report.overallStatus === 'FAIL';
+
+  // Build annotation map once — maps JSON paths → violations
+  const annotations = useMemo(
+    () => buildAnnotationMap(model, report),
+    [model, report]
+  );
+
+  const violationCount = report.totalFail + report.totalWarn;
 
   return (
     <motion.div
@@ -68,11 +82,73 @@ export function ResultsView({ model, report }: { model: BuildingModel, report: C
           ))}
         </div>
 
-        {/* Floor Plan Vis (Sticky) */}
-        <div className="lg:col-span-2 sticky top-24">
-          <FloorPlanVis model={model} report={report} />
+        {/* Right Panel — Floor Plan or JSON Source */}
+        <div className="lg:col-span-2 sticky top-24 flex flex-col gap-0">
+          {/* Tab bar */}
+          <div className="flex items-center border border-b-0 border-slate-200 rounded-t-xl bg-slate-50 overflow-hidden">
+            <TabButton
+              active={activeTab === 'floorplan'}
+              onClick={() => setActiveTab('floorplan')}
+              icon={<Map className="w-3.5 h-3.5" />}
+              label="Floor Plan"
+            />
+            <TabButton
+              active={activeTab === 'json'}
+              onClick={() => setActiveTab('json')}
+              icon={<Code2 className="w-3.5 h-3.5" />}
+              label="JSON Source"
+              badge={violationCount > 0 ? violationCount : undefined}
+            />
+          </div>
+
+          {/* Tab content */}
+          <div className="rounded-b-xl overflow-hidden">
+            {activeTab === 'floorplan' && (
+              <FloorPlanVis model={model} report={report} />
+            )}
+            {activeTab === 'json' && (
+              <JsonViewer
+                data={model.building}
+                annotations={annotations}
+                violationCount={violationCount}
+              />
+            )}
+          </div>
         </div>
       </div>
     </motion.div>
+  );
+}
+
+function TabButton({
+  active,
+  onClick,
+  icon,
+  label,
+  badge,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  label: string;
+  badge?: number;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex items-center gap-2 px-5 py-3 text-sm font-semibold transition-colors border-r border-slate-200 last:border-r-0 focus:outline-none ${
+        active
+          ? 'bg-white text-slate-900 shadow-sm'
+          : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100'
+      }`}
+    >
+      {icon}
+      {label}
+      {badge !== undefined && (
+        <span className="ml-0.5 px-1.5 py-0.5 rounded-full bg-red-100 text-red-700 text-[10px] font-bold leading-none">
+          {badge}
+        </span>
+      )}
+    </button>
   );
 }
