@@ -13,8 +13,8 @@ export function UploadZone({ onModelLoaded }: { onModelLoaded: (m: BuildingModel
     reader.onload = (e) => {
       try {
         const json = JSON.parse(e.target?.result as string);
-        if (!json.building || !json.building.floors) {
-          throw new Error("Invalid format: missing 'building' or 'floors'.");
+        if (!json.building || !Array.isArray(json.floors)) {
+          throw new Error("Invalid format: expected { building: { name }, floors: [...] }.");
         }
         onModelLoaded(json as BuildingModel);
       } catch (err) {

@@ -3,73 +3,52 @@
  *
  * Implements two rules from GB 50016-2014 (Code for Fire Protection Design of Buildings):
  *
- *  Rule 1 – Evacuation door net clear width ≥ 900 mm
+ *  Rule 1 – Fire exit door net clear width ≥ 900 mm
  *           Reference: GB 50016-2014 §5.5.18 / Table 5.5.18
  *
  *  Rule 2 – Room-to-nearest-exit travel distance ≤ 30 m (Type II office/commercial)
  *           Reference: GB 50016-2014 §5.5.17 / Table 5.5.17
  *
- * All spatial measurements are in millimetres (mm).
+ * Schema uses flat JSON: `model.floors[].rooms[].distance_to_exit_m` (pre-computed, metres)
+ * and `model.floors[].doors[].clear_width_mm` (mm) with `is_fire_exit` flag.
  */
 
 import type {
   BuildingModel,
   CheckItem,
   ComplianceReport,
-  Door,
-  Exit,
   Floor,
-  Room,
   RuleResult,
   Severity,
 } from "./types";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-/** Minimum evacuation door net clear width (mm) per GB 50016-2014 §5.5.18 */
-const MIN_EVAC_DOOR_WIDTH_MM = 900;
+/** Minimum fire exit door net clear width (mm) per GB 50016-2014 §5.5.18 */
+export const MIN_FIRE_DOOR_WIDTH_MM = 900;
 
-/**
- * Maximum allowable travel distance from any room to the nearest exit (mm).
- * 30 000 mm = 30 m, applicable to Type II buildings (office/commercial) with sprinklers.
- * Without sprinklers, many codes use 22 m; we default to 30 m here.
- */
-const MAX_TRAVEL_DISTANCE_MM = 30_000;
+/** Maximum allowable travel distance from any room to the nearest exit (m) per GB 50016-2014 §5.5.17 */
+export const MAX_TRAVEL_DISTANCE_M = 30.0;
 
-// ─── Geometry helper ──────────────────────────────────────────────────────────
+// ─── Rule 1: Fire exit door clear width ──────────────────────────────────────
 
-function euclidean(
-  a: { x: number; y: number },
-  b: { x: number; y: number }
-): number {
-  return Math.sqrt(Math.pow(a.x - b.x, 2) + Math.pow(a.y - b.y, 2));
-}
-
-function nearestExit(point: { x: number; y: number }, exits: Exit[]): Exit | null {
-  if (exits.length === 0) return null;
-  return exits.reduce((best, exit) =>
-    euclidean(point, exit.position) < euclidean(point, best.position) ? exit : best
-  );
-}
-
-// ─── Rule 1: Evacuation door width ───────────────────────────────────────────
-
-function checkEvacuationDoorWidth(floor: Floor): CheckItem[] {
+function checkDoorWidth(floor: Floor): CheckItem[] {
   const items: CheckItem[] = [];
 
   for (const door of floor.doors) {
-    if (!door.isEvacuationDoor) continue;
+    // Only fire exit doors are subject to the minimum width requirement
+    if (!door.is_fire_exit) continue;
 
-    const pass = door.netWidthMm >= MIN_EVAC_DOOR_WIDTH_MM;
+    const pass = door.clear_width_mm >= MIN_FIRE_DOOR_WIDTH_MM;
     items.push({
-      elementId: door.id,
-      elementName: `${door.name}${door.label ? ` (${door.label})` : ""}`,
+      elementId: door.door_id,
+      elementName: door.door_id,
       severity: pass ? "PASS" : "FAIL",
       message: pass
-        ? `Net clear width ${door.netWidthMm} mm ≥ ${MIN_EVAC_DOOR_WIDTH_MM} mm — compliant.`
-        : `Net clear width ${door.netWidthMm} mm < ${MIN_EVAC_DOOR_WIDTH_MM} mm — VIOLATION. Widen by at least ${MIN_EVAC_DOOR_WIDTH_MM - door.netWidthMm} mm.`,
-      actualValue: door.netWidthMm,
-      thresholdValue: MIN_EVAC_DOOR_WIDTH_MM,
+        ? `Net clear width ${door.clear_width_mm} mm ≥ ${MIN_FIRE_DOOR_WIDTH_MM} mm — compliant.`
+        : `Net clear width ${door.clear_width_mm} mm < ${MIN_FIRE_DOOR_WIDTH_MM} mm — VIOLATION. Widen by at least ${MIN_FIRE_DOOR_WIDTH_MM - door.clear_width_mm} mm.`,
+      actualValue: door.clear_width_mm,
+      thresholdValue: MIN_FIRE_DOOR_WIDTH_MM,
       unit: "mm",
     });
   }
@@ -83,33 +62,19 @@ function checkTravelDistance(floor: Floor): CheckItem[] {
   const items: CheckItem[] = [];
 
   for (const room of floor.rooms) {
-    const nearest = nearestExit(room.centroid, floor.exits);
-
-    if (!nearest) {
-      items.push({
-        elementId: room.id,
-        elementName: room.name,
-        severity: "FAIL",
-        message: "No exits defined on this floor — cannot evaluate travel distance.",
-        unit: "mm",
-      });
-      continue;
-    }
-
-    const distanceMm = Math.round(euclidean(room.centroid, nearest.position));
-    const distanceM = (distanceMm / 1000).toFixed(1);
-    const pass = distanceMm <= MAX_TRAVEL_DISTANCE_MM;
+    const dist = room.distance_to_exit_m;
+    const pass = dist <= MAX_TRAVEL_DISTANCE_M;
 
     items.push({
-      elementId: room.id,
+      elementId: room.room_id,
       elementName: room.name,
       severity: pass ? "PASS" : "FAIL",
       message: pass
-        ? `Travel distance to "${nearest.label}" is ${distanceM} m ≤ ${MAX_TRAVEL_DISTANCE_MM / 1000} m — compliant.`
-        : `Travel distance to nearest exit "${nearest.label}" is ${distanceM} m > ${MAX_TRAVEL_DISTANCE_MM / 1000} m — VIOLATION.`,
-      actualValue: distanceMm,
-      thresholdValue: MAX_TRAVEL_DISTANCE_MM,
-      unit: "mm",
+        ? `Travel distance ${dist} m ≤ ${MAX_TRAVEL_DISTANCE_M} m — compliant.`
+        : `Travel distance ${dist} m > ${MAX_TRAVEL_DISTANCE_M} m — VIOLATION.`,
+      actualValue: dist,
+      thresholdValue: MAX_TRAVEL_DISTANCE_M,
+      unit: "m",
     });
   }
 
@@ -130,8 +95,8 @@ export function runCompliance(model: BuildingModel): ComplianceReport {
   const allRule1Items: CheckItem[] = [];
   const allRule2Items: CheckItem[] = [];
 
-  for (const floor of model.building.floors) {
-    allRule1Items.push(...checkEvacuationDoorWidth(floor));
+  for (const floor of model.floors) {
+    allRule1Items.push(...checkDoorWidth(floor));
     allRule2Items.push(...checkTravelDistance(floor));
   }
 
@@ -141,9 +106,9 @@ export function runCompliance(model: BuildingModel): ComplianceReport {
   const rules: RuleResult[] = [
     {
       ruleId: "GB-DOOR-WIDTH",
-      ruleName: "Evacuation Door Net Clear Width",
+      ruleName: "Fire Exit Door Net Clear Width",
       ruleCode: "GB 50016-2014 §5.5.18",
-      description: `Every evacuation door must have a net clear width of at least ${MIN_EVAC_DOOR_WIDTH_MM} mm.`,
+      description: `Every fire exit door must have a net clear width of at least ${MIN_FIRE_DOOR_WIDTH_MM} mm.`,
       items: allRule1Items,
       ...rule1Counts,
     },
@@ -151,7 +116,7 @@ export function runCompliance(model: BuildingModel): ComplianceReport {
       ruleId: "GB-TRAVEL-DIST",
       ruleName: "Room-to-Exit Travel Distance",
       ruleCode: "GB 50016-2014 §5.5.17",
-      description: `The walking distance from any occupied room's centroid to the nearest exit must not exceed ${MAX_TRAVEL_DISTANCE_MM / 1000} m.`,
+      description: `The walking distance from any room to the nearest exit must not exceed ${MAX_TRAVEL_DISTANCE_M} m.`,
       items: allRule2Items,
       ...rule2Counts,
     },
@@ -176,5 +141,3 @@ export function runCompliance(model: BuildingModel): ComplianceReport {
     overallStatus,
   };
 }
-
-export { MIN_EVAC_DOOR_WIDTH_MM, MAX_TRAVEL_DISTANCE_MM };

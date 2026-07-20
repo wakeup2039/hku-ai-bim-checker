@@ -4,8 +4,9 @@
  * Maps ComplianceReport violations back to exact JSON paths in the BuildingModel,
  * so the JSON viewer can highlight the specific fields that caused each failure.
  *
- * Path format uses dot-notation with bracket indices:
- *   "building.floors[0].doors[1].netWidthMm"
+ * Path format uses dot-notation with bracket indices, rooted at the model root:
+ *   "floors[0].doors[1].clear_width_mm"
+ *   "floors[0].rooms[0].distance_to_exit_m"
  */
 
 import type { BuildingModel, ComplianceReport, CheckItem } from "./types";
@@ -13,7 +14,7 @@ import type { BuildingModel, ComplianceReport, CheckItem } from "./types";
 export interface Annotation {
   /** The violated element's path (e.g. the whole door object) */
   elementPath: string;
-  /** The specific bad field path, if we can determine it */
+  /** The specific bad field path, if determinable */
   fieldPath: string | null;
   severity: "PASS" | "FAIL" | "WARNING";
   ruleId: string;
@@ -58,28 +59,33 @@ export function buildAnnotationMap(
       };
 
       // Walk the model to find the element by id
-      model.building.floors.forEach((floor, fi) => {
-        const floorBase = `building.floors[${fi}]`;
+      model.floors.forEach((floor, fi) => {
+        const floorBase = `floors[${fi}]`;
 
-        // Door check
+        // Door check — match by door_id
         floor.doors.forEach((door, di) => {
-          if (door.id !== item.elementId) return;
+          if (door.door_id !== item.elementId) return;
           const doorPath = `${floorBase}.doors[${di}]`;
           const fieldPath =
             rule.ruleId === "GB-DOOR-WIDTH"
-              ? `${doorPath}.netWidthMm`
+              ? `${doorPath}.clear_width_mm`
               : null;
 
           add(doorPath, { ...ann, elementPath: doorPath, fieldPath });
           if (fieldPath) add(fieldPath, { ...ann, elementPath: doorPath, fieldPath });
         });
 
-        // Room check
+        // Room check — match by room_id
         floor.rooms.forEach((room, ri) => {
-          if (room.id !== item.elementId) return;
+          if (room.room_id !== item.elementId) return;
           const roomPath = `${floorBase}.rooms[${ri}]`;
-          // Travel distance is a derived value (centroid → exit), no single field
-          add(roomPath, { ...ann, elementPath: roomPath, fieldPath: null });
+          const fieldPath =
+            rule.ruleId === "GB-TRAVEL-DIST"
+              ? `${roomPath}.distance_to_exit_m`
+              : null;
+
+          add(roomPath, { ...ann, elementPath: roomPath, fieldPath });
+          if (fieldPath) add(fieldPath, { ...ann, elementPath: roomPath, fieldPath });
         });
       });
     }

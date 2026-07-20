@@ -108,7 +108,7 @@ export function ResultsView({ model, report }: { model: BuildingModel, report: C
             )}
             {activeTab === 'json' && (
               <JsonViewer
-                data={model.building}
+                data={model}
                 annotations={annotations}
                 violationCount={violationCount}
               />

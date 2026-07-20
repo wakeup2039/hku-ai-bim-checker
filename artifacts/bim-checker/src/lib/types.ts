@@ -1,69 +1,34 @@
 /**
- * Simplified building model — JSON-serialisable representation of a floor plan.
- * Coordinates are in millimetres (mm) in a 2-D plan view.
+ * Simplified building model — flat JSON schema matching the Python compliance agent.
+ * Distances are in metres (m); door widths are in millimetres (mm).
  */
 
-export interface Point2D {
-  x: number;
-  y: number;
-}
-
 export interface Room {
-  id: string;
+  room_id: string;
   name: string;
-  /** E.g. "OFFICE", "CORRIDOR", "MEETING_ROOM", "TOILET", "STORAGE" */
-  type: string;
-  /** Axis-aligned bounding rectangle corner points (4 points, clockwise from top-left) */
-  polygon: Point2D[];
-  /** Pre-computed geometric centre (mm) */
-  centroid: Point2D;
-  /** Floor area in m² */
-  areaSqm: number;
+  /** Pre-computed walking distance from room to nearest exit, in metres */
+  distance_to_exit_m: number;
 }
 
 export interface Door {
-  id: string;
-  name: string;
+  door_id: string;
   /** Net clear width in mm */
-  netWidthMm: number;
-  /** Position on the floor plan (mm) */
-  position: Point2D;
-  /** True → this door is counted as an evacuation door and must meet minimum width */
-  isEvacuationDoor: boolean;
-  /** Optional label describing the door's location */
-  label?: string;
-}
-
-export interface Exit {
-  id: string;
-  /** E.g. "STAIRCASE", "FIRE_EXIT", "MAIN_ENTRANCE" */
-  type: string;
-  /** Position on the floor plan (mm) */
-  position: Point2D;
-  label: string;
+  clear_width_mm: number;
+  /** True → this is a fire/evacuation exit door and must meet minimum width */
+  is_fire_exit: boolean;
+  /** Fire-resistance rating in minutes (informational) */
+  fire_rating_min: number;
 }
 
 export interface Floor {
-  id: string;
-  name: string;
-  /** Floor elevation (mm above ground) — informational */
-  elevationMm: number;
+  floor_id: string;
   rooms: Room[];
   doors: Door[];
-  exits: Exit[];
-}
-
-export interface Building {
-  name: string;
-  /** E.g. "OFFICE", "RESIDENTIAL", "COMMERCIAL", "MIXED" */
-  type: string;
-  /** Applicable code: default "GB 50016-2014" */
-  applicableCode?: string;
-  floors: Floor[];
 }
 
 export interface BuildingModel {
-  building: Building;
+  building: { name: string };
+  floors: Floor[];
 }
 
 // ─── Compliance result types ──────────────────────────────────────────────────

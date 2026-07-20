@@ -35,6 +35,13 @@ const TOKEN = {
   bracket: "text-slate-500 font-mono",
 };
 
+// ─── Build child path (handles empty root correctly) ─────────────────────────
+function childPath(parentPath: string, key: string | number): string {
+  if (typeof key === "number") return `${parentPath}[${key}]`;
+  if (parentPath === "") return key;
+  return `${parentPath}.${key}`;
+}
+
 // ─── Inline violation badge ───────────────────────────────────────────────────
 function ViolationBadge({ ann }: { ann: Annotation }) {
   const [open, setOpen] = useState(false);
@@ -196,17 +203,15 @@ export function JsonNode({ data, path, annotations, depth = 0, keyName, isLast =
             className="overflow-hidden"
           >
             {!isEmpty && entries.map(([k, v], idx) => {
-              const childPath = typeof k === "number"
-                ? `${path}[${k}]`
-                : `${path}.${k}`;
+              const cp = childPath(path, k as string | number);
               return (
                 <JsonNode
-                  key={childPath}
+                  key={cp}
                   data={v}
-                  path={childPath}
+                  path={cp}
                   annotations={annotations}
                   depth={depth + 1}
-                  keyName={k}
+                  keyName={k as string | number}
                   isLast={idx === entries.length - 1}
                 />
               );
@@ -261,9 +266,9 @@ export function JsonViewer({ data, annotations, violationCount }: JsonViewerProp
         </div>
       </div>
 
-      {/* JSON tree */}
+      {/* JSON tree — root path is "" so top-level keys resolve correctly */}
       <div className="overflow-auto max-h-[70vh] p-4 text-sm font-mono leading-6">
-        <JsonNode data={data} path="building" annotations={annotations} depth={0} />
+        <JsonNode data={data} path="" annotations={annotations} depth={0} />
       </div>
     </div>
   );

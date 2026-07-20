@@ -1,0 +1,123 @@
+import json
+import streamlit as st
+
+st.set_page_config(
+    page_title="HKU AI+BIM 智能合规审查 Agent", layout="wide"
+)
+
+st.title("🏗️ HKU AI+BIM 智能合规审查 Agent")
+st.caption("轻量化 BIM/CAD 语义合规检查工具")
+
+# 1. 兜底内置数据：保证即使上传错文件，程序依然 100% 能稳定演示
+DEFAULT_DATA = {
+    "building": {"name": "HKU Innovation Center"},
+    "floors": [
+        {
+            "floor_id": "F1",
+            "rooms": [
+                {
+                    "room_id": "R101",
+                    "name": "服务器机房",
+                    "distance_to_exit_m": 18.0,
+                },
+                {
+                    "room_id": "R102",
+                    "name": "主会议室",
+                    "distance_to_exit_m": 34.5,
+                },
+            ],
+            "doors": [
+                {
+                    "door_id": "D101",
+                    "clear_width_mm": 850,
+                    "is_fire_exit": False,
+                    "fire_rating_min": 0,
+                },
+                {
+                    "door_id": "D102_EXIT",
+                    "clear_width_mm": 800,
+                    "is_fire_exit": True,
+                    "fire_rating_min": 60,
+                },
+            ],
+        }
+    ],
+}
+
+# 2. 侧边栏文件上传逻辑（加入类型防护）
+st.sidebar.header("📁 文件输入")
+uploaded_file = st.sidebar.file_uploader(
+    "上传建筑模型 JSON 文件", type=["json"]
+)
+
+data = None
+
+if uploaded_file is not None:
+    try:
+        # 读取上传的文件内容
+        raw_content = uploaded_file.read().decode("utf-8")
+
+        # 防护校验：如果文件里包含 Python 的 import 关键字，说明用户误上传了代码文件
+        if "import " in raw_content or "def " in raw_content:
+            st.sidebar.error(
+                "⚠️ 警告：你上传的是 Python 脚本 (.py)，请上传标准的建筑 JSON 模型数据！"
+            )
+        else:
+            data = json.loads(raw_content)
+            st.sidebar.success("✅ JSON 模型数据加载成功！")
+    except Exception as e:
+        st.sidebar.error(f"❌ 解析失败，请检查是否为合法 JSON 格式: {e}")
+
+# 兜底防护：如果未上传或上传文件非法，自动退回到默认安全数据
+if data is None:
+    st.sidebar.info("💡 当前正在自动使用安全示例模型数据")
+    data = DEFAULT_DATA
+
+# 3. 容错数据提取（无论数据平铺还是嵌套，都不报错）
+rooms = []
+doors = []
+
+if isinstance(data, dict):
+    if "floors" in data and isinstance(data["floors"], list):
+        for f in data["floors"]:
+            rooms.extend(f.get("rooms", []))
+            doors.extend(f.get("doors", []))
+    elif "rooms" in data:
+        rooms = data.get("rooms", [])
+        doors = data.get("doors", [])
+
+# 4. 主界面展示
+col1, col2 = st.columns([1, 1])
+
+with col1:
+    st.subheader("📄 当前模型数据 preview")
+    st.json(data)
+
+with col2:
+    st.subheader("🚨 规则合规审查结果")
+
+    if st.button("开始运行 Agent 审查", type="primary"):
+        violations = []
+
+        # 审查门宽
+        for door in doors:
+            if door.get("is_fire_exit") and door.get("clear_width_mm", 0) < 900:
+                violations.append(
+                    f"❌ [硬规则违规] 疏散门 `{door.get('door_id')}` 净宽只有 {door.get('clear_width_mm')}mm (要求 ≥ 900mm)"
+                )
+
+        # 审查疏散距离
+        for room in rooms:
+            if room.get("distance_to_exit_m", 0) > 30.0:
+                violations.append(
+                    f"❌ [硬规则违规] 房间 `{room.get('name')}` 疏散距离为 {room.get('distance_to_exit_m')}m (要求 ≤ 30m)"
+                )
+
+        if violations:
+            for item in violations:
+                st.error(item)
+            st.info(
+                "📖 **规范依据**：根据《GB 50016 建筑设计防火规范》第 5.5.18 及 5.5.17 条规定。"
+            )
+        else:
+            st.success("🎉 所有项检查合格！")
