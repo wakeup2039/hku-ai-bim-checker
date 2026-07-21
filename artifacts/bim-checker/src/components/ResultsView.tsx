@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { BuildingModel, ComplianceReport } from '@/lib/types';
 import { CheckCircle2, XCircle, AlertTriangle, ShieldCheck, Map, Code2 } from 'lucide-react';
-import { FloorPlanVis } from './FloorPlanVis';
+import { FloorPlanPlot } from './FloorPlanPlot';
 import { RuleCard } from './RuleCard';
 import { JsonViewer } from './JsonViewer';
 import { buildAnnotationMap } from '@/lib/jsonAnnotate';
@@ -104,7 +104,7 @@ export function ResultsView({ model, report }: { model: BuildingModel, report: C
           {/* Tab content */}
           <div className="rounded-b-xl overflow-hidden">
             {activeTab === 'floorplan' && (
-              <FloorPlanVis model={model} report={report} />
+              <FloorPlanPlot model={model} report={report} />
             )}
             {activeTab === 'json' && (
               <JsonViewer

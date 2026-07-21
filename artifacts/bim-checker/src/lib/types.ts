@@ -1,13 +1,22 @@
 /**
  * Simplified building model — flat JSON schema matching the Python compliance agent.
- * Distances are in metres (m); door widths are in millimetres (mm).
+ * Distances are in metres (m); door widths and coordinates are in millimetres (mm).
  */
+
+export interface Point2D {
+  x: number;
+  y: number;
+}
 
 export interface Room {
   room_id: string;
   name: string;
   /** Pre-computed walking distance from room to nearest exit, in metres */
   distance_to_exit_m: number;
+  /** Optional: room centroid for 2D floor plan (mm) */
+  center?: Point2D;
+  /** Optional: room outline vertices (clockwise, mm) for 2D floor plan */
+  polygon?: Point2D[];
 }
 
 export interface Door {
@@ -18,6 +27,8 @@ export interface Door {
   is_fire_exit: boolean;
   /** Fire-resistance rating in minutes (informational) */
   fire_rating_min: number;
+  /** Optional: door position on the floor plan (mm) for 2D floor plan */
+  location?: Point2D;
 }
 
 export interface Floor {

@@ -45,8 +45,10 @@
     "@tailwindcss/vite": "catalog:",
     "@tanstack/react-query": "catalog:",
     "@types/node": "catalog:",
+    "@types/plotly.js": "^3.0.10",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
+    "@types/react-plotly.js": "^2.6.4",
     "@vitejs/plugin-react": "catalog:",
     "@workspace/api-client-react": "workspace:*",
     "class-variance-authority": "catalog:",
@@ -73,5 +75,9 @@
     "vite": "catalog:",
     "wouter": "^3.3.5",
     "zod": "catalog:"
+  },
+  "dependencies": {
+    "plotly.js": "^3.7.0",
+    "react-plotly.js": "^4.0.0"
   }
 }
