@@ -78,6 +78,7 @@
   },
   "dependencies": {
     "plotly.js": "^3.7.0",
+    "plotly.js-dist-min": "^3.7.0",
     "react-plotly.js": "^4.0.0"
   }
 }
