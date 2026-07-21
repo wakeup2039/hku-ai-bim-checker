@@ -1,15 +1,15 @@
 /**
  * FloorPlanPlot.tsx
  *
- * Plotly-based 2D floor plan visualisation.
- * - Room polygons filled and labelled; red if any violation, green if pass
- * - Door positions as markers; red diamond if violation, green triangle if pass, grey circle if non-exit
- * - Works per-floor; shows one floor at a time via tab selector
+ * Plotly topology tree: Building → Floors → Rooms / Doors
+ * - Works entirely from JSON structure — NO polygon/center/location needed
+ * - Violation nodes highlighted red; compliant nodes green; unchecked doors grey
+ * - Hover tooltip shows element details and rule thresholds
  */
 
-import { useState } from "react";
+import { useMemo } from "react";
 import Plot from "react-plotly.js";
-import type { Data } from "plotly.js";
+import type { Data, Layout } from "plotly.js";
 import { BuildingModel, ComplianceReport } from "@/lib/types";
 import { MIN_FIRE_DOOR_WIDTH_MM, MAX_TRAVEL_DISTANCE_M } from "@/lib/compliance";
 
@@ -18,242 +18,255 @@ interface Props {
   report: ComplianceReport;
 }
 
-// Convert mm to a display unit (we keep mm but label axes)
-const mm = (v: number) => v;
+// Y positions for each level
+const LEVEL_Y = { building: 3, floor: 2, leaf: 0.5 };
 
 export function FloorPlanPlot({ model, report }: Props) {
-  const [floorIdx, setFloorIdx] = useState(0);
-  const floor = model.floors[floorIdx];
-
-  // Build violation look-up from report
   const travelItems = report.rules.find(r => r.ruleId === "GB-TRAVEL-DIST")?.items ?? [];
   const doorItems   = report.rules.find(r => r.ruleId === "GB-DOOR-WIDTH")?.items ?? [];
 
-  const roomFail  = new Set(travelItems.filter(i => i.severity === "FAIL").map(i => i.elementId));
-  const doorFail  = new Set(doorItems.filter(i => i.severity === "FAIL").map(i => i.elementId));
+  const roomFail = new Set(travelItems.filter(i => i.severity === "FAIL").map(i => i.elementId));
+  const doorFail = new Set(doorItems.filter(i => i.severity === "FAIL").map(i => i.elementId));
 
-  // ── Build Plotly traces ────────────────────────────────────────────────────
+  const { traces, layout } = useMemo<{ traces: Data[]; layout: Partial<Layout> }>(() => {
+    // ── 1. Assign x positions to leaves (rooms then doors, per floor) ────────
+    const totalLeaves = model.floors.reduce((s, f) => s + f.rooms.length + f.doors.length, 0);
+    if (totalLeaves === 0) return { traces: [], layout: {} };
 
-  // 1. Room polygon fills — one trace per room so we can colour individually
-  const roomTraces: Data[] = floor.rooms
-    .filter(r => r.polygon && r.polygon.length > 0)
-    .map(room => {
-      const isFail = roomFail.has(room.room_id);
-      const poly   = room.polygon!;
-      // Close the polygon
-      const xs = [...poly.map(p => mm(p.x)), mm(poly[0].x)];
-      const ys = [...poly.map(p => mm(p.y)), mm(poly[0].y)];
+    const leafXOf: Record<string, number> = {};
+    let li = 0;
+    model.floors.forEach(f => {
+      [...f.rooms.map(r => r.room_id), ...f.doors.map(d => d.door_id)].forEach(id => {
+        // space leaves with a small gap between floors
+        leafXOf[id] = li + 0.5;
+        li++;
+      });
+      li += 0.6; // inter-floor gap
+    });
+    const totalWidth = li - 0.6; // actual span
 
-      return {
-        type: "scatter" as const,
-        x: xs,
-        y: ys,
-        fill: "toself",
-        fillcolor: isFail ? "rgba(239,68,68,0.18)" : "rgba(34,197,94,0.12)",
-        line: { color: isFail ? "#ef4444" : "#22c55e", width: isFail ? 2.5 : 1.5 },
-        mode: "lines" as const,
-        hoverinfo: "skip" as const,
-        showlegend: false,
-        name: room.name,
-      };
+    // Normalise to [0, 1]
+    const norm = (v: number) => v / totalWidth;
+
+    // ── 2. Floor x = midpoint of its leaves ─────────────────────────────────
+    const floorXOf: Record<string, number> = {};
+    model.floors.forEach(f => {
+      const ids = [...f.rooms.map(r => r.room_id), ...f.doors.map(d => d.door_id)];
+      const xs = ids.map(id => norm(leafXOf[id]));
+      floorXOf[f.floor_id] = xs.reduce((a, b) => a + b, 0) / xs.length;
     });
 
-  // 2. Room centroid labels
-  const roomsWithCenter = floor.rooms.filter(r => r.center);
-  const labelTrace: Data = {
-    type: "scatter" as const,
-    mode: "text+markers" as const,
-    x: roomsWithCenter.map(r => mm(r.center!.x)),
-    y: roomsWithCenter.map(r => mm(r.center!.y)),
-    text: roomsWithCenter.map(r => {
-      const isFail = roomFail.has(r.room_id);
-      return `<b>${r.name}</b><br>${r.room_id}<br>${r.distance_to_exit_m} m ${isFail ? "❌" : "✅"}`;
-    }),
-    textposition: "middle center" as const,
-    textfont: {
-      size: 11,
-      color: roomsWithCenter.map(r => roomFail.has(r.room_id) ? "#b91c1c" : "#14532d"),
-    },
-    marker: {
-      size: 6,
-      color: roomsWithCenter.map(r => roomFail.has(r.room_id) ? "#ef4444" : "#22c55e"),
-      opacity: 0.5,
-    },
-    hovertemplate: roomsWithCenter.map(r => {
-      const isFail = roomFail.has(r.room_id);
-      return `<b>${r.name}</b><br>ID: ${r.room_id}<br>距出口: ${r.distance_to_exit_m} m (限 ${MAX_TRAVEL_DISTANCE_M} m)<br>状态: ${isFail ? "❌ 违规" : "✅ 合规"}<extra></extra>`;
-    }),
-    showlegend: false,
-    name: "rooms",
-  };
+    // ── 3. Building x = average of floor xs ─────────────────────────────────
+    const floorXs = Object.values(floorXOf);
+    const buildingX = floorXs.reduce((a, b) => a + b, 0) / floorXs.length;
 
-  // 3. Door markers
-  const doorsWithLoc = floor.doors.filter(d => d.location);
-  const doorTrace: Data = {
-    type: "scatter" as const,
-    mode: "text+markers" as const,
-    x: doorsWithLoc.map(d => mm(d.location!.x)),
-    y: doorsWithLoc.map(d => mm(d.location!.y)),
-    text: doorsWithLoc.map(d => d.door_id),
-    textposition: "top center" as const,
-    textfont: {
-      size: 9,
-      color: doorsWithLoc.map(d => {
-        if (!d.is_fire_exit) return "#64748b";
-        return doorFail.has(d.door_id) ? "#b91c1c" : "#15803d";
-      }),
-    },
-    marker: {
-      symbol: doorsWithLoc.map(d => {
-        if (!d.is_fire_exit) return "circle";
-        return doorFail.has(d.door_id) ? "diamond" : "triangle-up";
-      }) as string[],
-      size: doorsWithLoc.map(d => d.is_fire_exit ? 14 : 10),
-      color: doorsWithLoc.map(d => {
-        if (!d.is_fire_exit) return "#94a3b8";
-        return doorFail.has(d.door_id) ? "#ef4444" : "#22c55e";
-      }),
-      line: {
-        color: doorsWithLoc.map(d => {
-          if (!d.is_fire_exit) return "#64748b";
-          return doorFail.has(d.door_id) ? "#991b1b" : "#15803d";
-        }),
-        width: 2,
+    // ── 4. Edges trace ───────────────────────────────────────────────────────
+    const ex: (number | null)[] = [];
+    const ey: (number | null)[] = [];
+
+    const addEdge = (x0: number, y0: number, x1: number, y1: number) => {
+      ex.push(x0, x1, null);
+      ey.push(y0, y1, null);
+    };
+
+    model.floors.forEach(f => {
+      const fx = floorXOf[f.floor_id];
+      addEdge(buildingX, LEVEL_Y.building, fx, LEVEL_Y.floor);
+
+      [...f.rooms.map(r => r.room_id), ...f.doors.map(d => d.door_id)].forEach(id => {
+        addEdge(fx, LEVEL_Y.floor, norm(leafXOf[id]), LEVEL_Y.leaf);
+      });
+    });
+
+    const edgeTrace: Data = {
+      type: "scatter",
+      mode: "lines",
+      x: ex,
+      y: ey,
+      line: { color: "#cbd5e1", width: 1.5, dash: "solid" },
+      hoverinfo: "skip",
+      showlegend: false,
+      name: "_edges",
+    };
+
+    // ── 5. Node arrays ───────────────────────────────────────────────────────
+    type Sym = string;
+    const nx: number[] = [];
+    const ny: number[] = [];
+    const nc: string[] = [];   // fill color
+    const nbc: string[] = [];  // border color
+    const nsz: number[] = [];  // marker size
+    const nsy: Sym[] = [];     // marker symbol
+    const nlabel: string[] = [];
+    const nhover: string[] = [];
+
+    const push = (
+      x: number, y: number,
+      fillColor: string, borderColor: string,
+      size: number, sym: Sym,
+      label: string, hover: string
+    ) => {
+      nx.push(x); ny.push(y);
+      nc.push(fillColor); nbc.push(borderColor);
+      nsz.push(size); nsy.push(sym);
+      nlabel.push(label); nhover.push(hover);
+    };
+
+    // Building
+    push(
+      buildingX, LEVEL_Y.building,
+      "#1e293b", "#0f172a", 28, "square",
+      truncate(model.building.name, 14),
+      `<b>${model.building.name}</b><br>建筑根节点<br>${model.floors.length} 楼层<extra></extra>`
+    );
+
+    // Floors
+    model.floors.forEach(f => {
+      const fx = floorXOf[f.floor_id];
+      const fireExCount = f.doors.filter(d => d.is_fire_exit).length;
+      push(
+        fx, LEVEL_Y.floor,
+        "#3b82f6", "#1d4ed8", 22, "diamond",
+        f.floor_id,
+        `<b>楼层 ${f.floor_id}</b><br>${f.rooms.length} 房间 · ${fireExCount} 消防门<extra></extra>`
+      );
+
+      // Rooms
+      f.rooms.forEach(room => {
+        const isFail = roomFail.has(room.room_id);
+        const fillC  = isFail ? "#ef4444" : "#22c55e";
+        const bordC  = isFail ? "#991b1b" : "#15803d";
+        push(
+          norm(leafXOf[room.room_id]), LEVEL_Y.leaf,
+          fillC, bordC, 20, "circle",
+          truncate(room.name, 8),
+          `<b>${room.name}</b><br>ID: ${room.room_id}<br>` +
+          `距出口: ${room.distance_to_exit_m} m (≤ ${MAX_TRAVEL_DISTANCE_M} m)<br>` +
+          `状态: ${isFail ? "❌ 违规" : "✅ 合规"}<extra></extra>`
+        );
+      });
+
+      // Doors
+      f.doors.forEach(door => {
+        const isFail   = doorFail.has(door.door_id);
+        const isFireEx = door.is_fire_exit;
+        const fillC = !isFireEx ? "#94a3b8" : isFail ? "#ef4444" : "#22c55e";
+        const bordC = !isFireEx ? "#64748b" : isFail ? "#991b1b" : "#15803d";
+        const sym   = isFireEx ? "triangle-up" : "triangle-up-open";
+        push(
+          norm(leafXOf[door.door_id]), LEVEL_Y.leaf,
+          fillC, bordC, isFireEx ? 18 : 14, sym,
+          truncate(door.door_id, 10),
+          `<b>${door.door_id}</b><br>` +
+          `净宽: ${door.clear_width_mm} mm (≥ ${MIN_FIRE_DOOR_WIDTH_MM} mm)<br>` +
+          `消防门: ${isFireEx ? "是" : "否"}<br>` +
+          (isFireEx
+            ? `耐火: ${door.fire_rating_min} min<br>状态: ${isFail ? "❌ 违规" : "✅ 合规"}`
+            : "（非消防门，不检查宽度）"
+          ) + "<extra></extra>"
+        );
+      });
+    });
+
+    const nodeTrace: Data = {
+      type: "scatter",
+      mode: "text+markers",
+      x: nx,
+      y: ny,
+      marker: {
+        symbol: nsy,
+        size: nsz,
+        color: nc,
+        line: { color: nbc, width: 2.5 },
       },
-    },
-    hovertemplate: doorsWithLoc.map(d => {
-      const isFail = doorFail.has(d.door_id);
-      const isFireEx = d.is_fire_exit;
-      return `<b>${d.door_id}</b><br>净宽: ${d.clear_width_mm} mm (限 ${MIN_FIRE_DOOR_WIDTH_MM} mm)<br>消防门: ${isFireEx ? "是" : "否"}<br>${isFireEx ? `耐火等级: ${d.fire_rating_min} min<br>状态: ${isFail ? "❌ 违规" : "✅ 合规"}` : "（非消防门，不检查宽度）"}<extra></extra>`;
-    }),
-    showlegend: false,
-    name: "doors",
-  };
+      text: nlabel,
+      textposition: "bottom center",
+      textfont: { size: 10, color: "#334155" },
+      hovertemplate: nhover,
+      showlegend: false,
+      name: "_nodes",
+    };
 
-  // ── Legend traces (just for legend display) ──────────────────────────────
-  const legendTraces: Data[] = [
-    {
-      type: "scatter", mode: "markers", x: [null], y: [null],
-      marker: { symbol: "square", size: 12, color: "rgba(34,197,94,0.25)", line: { color: "#22c55e", width: 2 } },
-      name: "房间 — 合规", showlegend: true,
-    },
-    {
-      type: "scatter", mode: "markers", x: [null], y: [null],
-      marker: { symbol: "square", size: 12, color: "rgba(239,68,68,0.25)", line: { color: "#ef4444", width: 2 } },
-      name: "房间 — 违规 ❌", showlegend: true,
-    },
-    {
-      type: "scatter", mode: "markers", x: [null], y: [null],
-      marker: { symbol: "triangle-up", size: 12, color: "#22c55e", line: { color: "#15803d", width: 2 } },
-      name: "消防门 — 合规", showlegend: true,
-    },
-    {
-      type: "scatter", mode: "markers", x: [null], y: [null],
-      marker: { symbol: "diamond", size: 12, color: "#ef4444", line: { color: "#991b1b", width: 2 } },
-      name: "消防门 — 违规 ❌", showlegend: true,
-    },
-    {
-      type: "scatter", mode: "markers", x: [null], y: [null],
-      marker: { symbol: "circle", size: 10, color: "#94a3b8", line: { color: "#64748b", width: 1.5 } },
-      name: "普通门（不检查）", showlegend: true,
-    },
-  ];
+    // ── 6. Legend dummy traces ───────────────────────────────────────────────
+    const leg = (name: string, color: string, sym: string, borderColor: string): Data => ({
+      type: "scatter",
+      mode: "markers",
+      x: [null], y: [null],
+      marker: { symbol: sym, size: 12, color, line: { color: borderColor, width: 2 } },
+      name,
+      showlegend: true,
+    });
 
-  // Compute axis bounds with padding
-  const allX: number[] = [];
-  const allY: number[] = [];
-  floor.rooms.forEach(r => {
-    r.polygon?.forEach(p => { allX.push(p.x); allY.push(p.y); });
-    if (r.center) { allX.push(r.center.x); allY.push(r.center.y); }
-  });
-  floor.doors.forEach(d => {
-    if (d.location) { allX.push(d.location.x); allY.push(d.location.y); }
-  });
+    const legendTraces: Data[] = [
+      leg("建筑 / 楼层",       "#3b82f6", "diamond",         "#1d4ed8"),
+      leg("房间 ✅ 合规",      "#22c55e", "circle",           "#15803d"),
+      leg("房间 ❌ 违规",      "#ef4444", "circle",           "#991b1b"),
+      leg("消防门 ✅ 合规",    "#22c55e", "triangle-up",      "#15803d"),
+      leg("消防门 ❌ 违规",    "#ef4444", "triangle-up",      "#991b1b"),
+      leg("普通门（不检查）",  "#94a3b8", "triangle-up-open", "#64748b"),
+    ];
 
-  const pad = (max: number, min: number) => (max - min) * 0.12;
-  const xMin = Math.min(...allX); const xMax = Math.max(...allX);
-  const yMin = Math.min(...allY); const yMax = Math.max(...allY);
-  const px = allX.length ? pad(xMax, xMin) : 5000;
-  const py = allY.length ? pad(yMax, yMin) : 5000;
+    // ── 7. Layout ────────────────────────────────────────────────────────────
+    const layout: Partial<Layout> = {
+      autosize: true,
+      margin: { t: 30, r: 160, b: 60, l: 90 },
+      paper_bgcolor: "#f8fafc",
+      plot_bgcolor: "#f8fafc",
+      xaxis: {
+        visible: false,
+        range: [-0.06, 1.06],
+        fixedrange: true,
+      },
+      yaxis: {
+        tickvals: [LEVEL_Y.building, LEVEL_Y.floor, LEVEL_Y.leaf],
+        ticktext: ["Building", "Floor", "Room / Door"],
+        tickfont: { size: 11, color: "#64748b" },
+        showgrid: false,
+        zeroline: false,
+        range: [-0.2, 3.6],
+        fixedrange: true,
+      },
+      legend: {
+        x: 1.01,
+        y: 1,
+        xanchor: "left",
+        font: { size: 11, color: "#334155" },
+        bgcolor: "rgba(255,255,255,0.92)",
+        bordercolor: "#e2e8f0",
+        borderwidth: 1,
+      },
+      hoverlabel: {
+        bgcolor: "#1e293b",
+        bordercolor: "#334155",
+        font: { color: "#f1f5f9", size: 12 },
+        align: "left",
+      },
+    };
 
-  const hasGeometry = floor.rooms.some(r => r.polygon) || floor.doors.some(d => d.location);
+    return { traces: [edgeTrace, nodeTrace, ...legendTraces], layout };
+  }, [model, report]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-      {/* Floor tabs */}
-      {model.floors.length > 1 && (
-        <div className="flex border-b border-slate-100 bg-slate-50">
-          {model.floors.map((f, i) => (
-            <button
-              key={f.floor_id}
-              onClick={() => setFloorIdx(i)}
-              className={`px-5 py-2.5 text-sm font-semibold border-r border-slate-100 last:border-r-0 transition-colors focus:outline-none ${
-                i === floorIdx
-                  ? "bg-white text-slate-900 shadow-sm"
-                  : "text-slate-500 hover:text-slate-700 hover:bg-slate-100"
-              }`}
-            >
-              {f.floor_id}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {!hasGeometry ? (
-        <div className="flex items-center justify-center h-64 text-slate-400 text-sm font-mono">
-          该楼层的 JSON 数据中未包含坐标信息（polygon / center / location）
-        </div>
-      ) : (
-        <Plot
-          data={[...roomTraces, labelTrace, doorTrace, ...legendTraces]}
-          layout={{
-            autosize: true,
-            margin: { t: 20, r: 20, b: 60, l: 60 },
-            xaxis: {
-              title: { text: "X (mm)", font: { size: 11, color: "#64748b" } },
-              range: [xMin - px, xMax + px],
-              showgrid: true,
-              gridcolor: "#e2e8f0",
-              zeroline: false,
-              tickfont: { size: 10, color: "#94a3b8" },
-            },
-            yaxis: {
-              title: { text: "Y (mm)", font: { size: 11, color: "#64748b" } },
-              range: [yMin - py, yMax + py],
-              showgrid: true,
-              gridcolor: "#e2e8f0",
-              zeroline: false,
-              tickfont: { size: 10, color: "#94a3b8" },
-              scaleanchor: "x",
-              scaleratio: 1,
-            },
-            paper_bgcolor: "#f8fafc",
-            plot_bgcolor: "#f8fafc",
-            legend: {
-              x: 1.01,
-              y: 1,
-              xanchor: "left" as const,
-              font: { size: 11, color: "#334155" },
-              bgcolor: "rgba(255,255,255,0.9)",
-              bordercolor: "#e2e8f0",
-              borderwidth: 1,
-            },
-            hoverlabel: {
-              bgcolor: "#1e293b",
-              bordercolor: "#334155",
-              font: { color: "#f8fafc", size: 12 },
-            },
-          }}
-          config={{
-            displayModeBar: true,
-            modeBarButtonsToRemove: ["select2d", "lasso2d", "autoScale2d"],
-            displaylogo: false,
-            responsive: true,
-          }}
-          style={{ width: "100%", minHeight: 520 }}
-          useResizeHandler
-        />
-      )}
+      <Plot
+        data={traces}
+        layout={layout}
+        config={{
+          displayModeBar: true,
+          modeBarButtonsToRemove: [
+            "zoom2d", "pan2d", "select2d", "lasso2d",
+            "zoomIn2d", "zoomOut2d", "autoScale2d", "resetScale2d",
+          ],
+          displaylogo: false,
+          responsive: true,
+        }}
+        style={{ width: "100%", minHeight: 500 }}
+        useResizeHandler
+      />
     </div>
   );
+}
+
+function truncate(s: string, n: number) {
+  return s.length > n ? s.slice(0, n) + "…" : s;
 }
